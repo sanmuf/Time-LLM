@@ -132,6 +132,45 @@ def hard_negative_mining(losses, labels, ratio=0.5):
     topk = torch.topk(neg_losses, k=k).indices
     return neg_indices[topk]
 
+class AsymmetricLoss(nn.Module):
+    def __init__(self, gamma_neg=4, gamma_pos=1, clip=0.05, eps=1e-8, reduction: str = "mean"):
+        super(AsymmetricLoss, self).__init__()
+        self.gamma_neg = gamma_neg  # 负样本的衰减力度，建议设大一点 (2~4)
+        self.gamma_pos = gamma_pos  # 正样本的衰减力度，建议设小 (0~1)
+        self.clip = clip            # 概率平移阈值，小于这个概率的负样本梯度归零
+        self.eps = eps
+        self.reduction = reduction
+
+    def forward(self, x, y):
+        """"
+        x: input logits (没有经过 sigmoid 的输出)
+        y: targets (0 或 1)
+        """
+        x_sigmoid = torch.sigmoid(x)
+        x_sigmoid_pos = x_sigmoid
+        x_sigmoid_neg = 1 - x_sigmoid
+
+        # 正样本/负样本的概率
+        pt0 = x_sigmoid_pos * y
+        pt1 = x_sigmoid_neg * (1 - y)  # pt = p if y=1 else 1-p
+
+        # 负样本概率平移
+        x_sigmoid_neg_shifted = (x_sigmoid_neg + self.clip).clamp(max=1)
+        pt1_shifted = x_sigmoid_neg_shifted * (1 - y)
+        pt_shifted = pt0 + pt1_shifted  # 只有负样本做了 shift
+
+        # 不对称的权重
+        one_sided_gamma = self.gamma_pos * y + self.gamma_neg * (1 - y)
+        one_sided_w = torch.pow(1 - pt_shifted, one_sided_gamma)
+
+        loss = -one_sided_w * torch.log(pt_shifted + self.eps)
+
+        if self.reduction == "mean":
+            return loss.mean()
+        if self.reduction == "sum":
+            return loss.sum()
+        return loss  # "none"
+
 # ------------------- 二分类指标工具 -------------------
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-x))
@@ -253,7 +292,8 @@ for ii in range(args.itr):
     if args.loss.upper() in ['BCE', 'BCEWITHLOGITSLOSS']:
         # criterion = FocalLoss(alpha=0.25, gamma=3.0)
         #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(accelerator.device))
-        criterion = nn.BCEWithLogitsLoss()
+        # criterion = nn.BCEWithLogitsLoss()
+        criterion = AsymmetricLoss(gamma_neg=4, gamma_pos=1, clip=0.05)
         is_binary_cls = True
     else:
         criterion = nn.MSELoss()
@@ -322,7 +362,34 @@ for ii in range(args.itr):
                     print("outputs slice example:", outputs[0, :5])
 
                 batch_y_slice = batch_y[:, -args.pred_len:, f_dim:]
-                loss = criterion(outputs, batch_y_slice)
+                
+                last_status = batch_x[:, -1, -1].to(accelerator.device)
+
+                # 2. 获取“当前时刻”的真实状态 (Target)
+                # batch_y_slice shape: [Batch, Pred_Len, 1] -> 变成 [Batch]
+                current_status = batch_y_slice.squeeze(-1).squeeze(-1).to(accelerator.device)
+
+                # 3. 找出“状态突变”的样本 (0->1 或 1->0)
+                # 如果相等，diff 为 0；如果不等，diff 为 1
+                is_change = (last_status != current_status).float()
+
+                # 4. 设置权重
+                # 没变的样本权重 = 1.0
+                # 突变的样本权重 = 1.0 + 15.0 (或者更高，比如 20.0)
+                # 这个系数 15.0 可以调节，越大说明你越想让模型关注突变
+                sample_weights = 1.0 + 10.0 * is_change 
+
+                # 5. 计算逐样本的 Loss (不求平均，reduction='none')
+                # 注意：这里需要手动调用 functional 的 BCE Loss
+                per_sample_loss = F.binary_cross_entropy_with_logits(
+                    outputs.squeeze(-1),       # [Batch, 1] -> [Batch]
+                    batch_y_slice.squeeze(-1), # [Batch, 1] -> [Batch]
+                    reduction='none'           # 关键：保留每个样本的 Loss
+                )
+
+                # 6. 加权并求平均
+                loss = (per_sample_loss * sample_weights).mean()
+
                 train_loss.append(loss.item())
                 accelerator.backward(loss)
                 model_optim.step()
