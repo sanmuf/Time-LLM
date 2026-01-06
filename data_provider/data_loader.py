@@ -431,7 +431,8 @@ class Dataset_Data_pred(Dataset):
     def __init__(self, root_path, flag='train', size=None,
                  features='MS', train_path='build_fail.csv',test_path='build_fail.csv',val_path='build_fail.csv',
                  train_json_path='train_fail.json', val_json_path='val_fail.json', test_json_path='test_fail.json',
-                 target='build_Failed', scale=True, timeenc=0, freq='h', percent=100,seasonal_patterns=None):
+                 target='build_Failed', scale=True, timeenc=0, freq='h', percent=100,seasonal_patterns=None,
+                 val_split=0.1):
         if size is None:
             self.seq_len = 24 * 4 * 4
             self.label_len = 24 * 4
@@ -456,6 +457,7 @@ class Dataset_Data_pred(Dataset):
         self.train_json_path = train_json_path
         self.val_json_path = val_json_path
         self.test_json_path = test_json_path
+        self.val_split = val_split
 
 
         self.__read_data__()
@@ -466,12 +468,24 @@ class Dataset_Data_pred(Dataset):
     def __read_data__(self):
         self.scaler = StandardScaler()
 
+        use_val_split = False
         if self.set_type == 0:  # train
             csv_file = self.train_path
             json_file = self.train_json_path
+            if self.val_path is None or self.val_path == self.train_path:
+                use_val_split = True
         elif self.set_type == 1:  # vali
             csv_file = self.val_path if hasattr(self, "val_path") else self.train_path
             json_file = self.val_json_path if hasattr(self, "val_json_path") else self.train_json_path
+            if self.val_path is None or self.val_path == self.train_path:
+                use_val_split = True
+            else:
+                val_csv = os.path.join(self.root_path, self.val_path)
+                val_json = os.path.join(self.root_path, self.val_json_path)
+                if not os.path.exists(val_csv) or not os.path.exists(val_json):
+                    csv_file = self.train_path
+                    json_file = self.train_json_path
+                    use_val_split = True
         else:  # test
             csv_file = self.test_path
             json_file = self.test_json_path
@@ -491,10 +505,22 @@ class Dataset_Data_pred(Dataset):
         ordered_cols = ([date_col] if date_col else []) + cols + [self.target]
         df_raw = df_raw[ordered_cols]
 
+        if self.set_type in [0, 1] and use_val_split:
+            total_len = len(df_raw)
+            val_len = int(total_len * self.val_split)
+            if val_len <= 0 or total_len - val_len <= 0:
+                raise ValueError("val_split too small/large for dataset length.")
+            if self.set_type == 0:
+                df_raw = df_raw.iloc[:total_len - val_len].reset_index(drop=True)
+                self.text_data = self.text_data[:total_len - val_len]
+            else:
+                df_raw = df_raw.iloc[total_len - val_len:].reset_index(drop=True)
+                self.text_data = self.text_data[total_len - val_len:]
+
         feature_cols = cols
         X_feat = df_raw[feature_cols].values.astype(np.float32)
         y_target = df_raw[[self.target]].values.astype(np.float32)
-        y=np.array(y_target).reshape(-1)
+        y = np.array(y_target).reshape(-1)
         print(f"Positive samples ratio: {np.sum(y==1)/len(y):.4f}")
 
         if self.scale:

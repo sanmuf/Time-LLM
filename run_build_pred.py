@@ -102,6 +102,7 @@ parser.add_argument('--use_amp', action='store_true', help='use automatic mixed 
 parser.add_argument('--llm_layers', type=int, default=6)
 parser.add_argument('--percent', type=int, default=100)
 parser.add_argument('--use_oversample', action='store_true', help='Use oversampling for training')
+parser.add_argument('--val_split', type=float, default=0.1, help='val split ratio when no val set provided')
 
 
 args = parser.parse_args()

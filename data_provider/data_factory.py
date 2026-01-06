@@ -62,7 +62,8 @@ def data_provider(args, flag,indices=None):
             timeenc=timeenc,
             freq=freq,
             percent=percent,
-            seasonal_patterns=args.seasonal_patterns
+            seasonal_patterns=args.seasonal_patterns,
+            val_split=getattr(args, "val_split", 0.1)
         )
     else:
         data_set = Data(
