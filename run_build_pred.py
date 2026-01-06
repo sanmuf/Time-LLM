@@ -203,6 +203,19 @@ def _bin_metrics_from_logits(logits: np.ndarray, labels: np.ndarray, thr: float 
         auc = float(np.trapz(tpr, fpr))
     return acc, f1, auc,rec,prec
 
+def _bin_ece(probs: np.ndarray, labels: np.ndarray, n_bins: int = 15) -> float:
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_ids = np.digitize(probs, bins) - 1
+    ece = 0.0
+    for b in range(n_bins):
+        mask = bin_ids == b
+        if not np.any(mask):
+            continue
+        bin_conf = float(np.mean(probs[mask]))
+        bin_acc = float(np.mean(labels[mask]))
+        ece += (np.sum(mask) / len(probs)) * abs(bin_acc - bin_conf)
+    return float(ece)
+
 def find_best_prec(logits: np.ndarray, labels: np.ndarray):
     best_f1, best_thr, best_acc, best_auc,best_rec,best_prec = 0.0, 0.5, 0.0, float('nan'),0.0,0.0
     for t in np.arange(0.1, 0.9 + 0.001, 0.01): 
@@ -235,12 +248,14 @@ def eval_binary_cls(args, accelerator, model, data_loader):
         all_logits.append(logits.detach().reshape(-1).cpu())
         all_labels.append(labels.detach().reshape(-1).cpu())
     if not all_logits:
-        return 0.0, 0.0, float('nan')
+        return 0.0, 0.0, float('nan'), 0.0, 0.0, float('nan')
     logits_np = torch.cat(all_logits).float().cpu().numpy()
     labels_np = torch.cat(all_labels).float().cpu().numpy()
     acc, f1, auc,recall,prec, thr = find_best_prec(logits_np, labels_np)
-    print(f"[Eval] Best Thr={thr:.2f}, Acc={acc:.4f}, F1={f1:.4f}, AUC={auc:.4f},Recall={recall:.4f},Prec={prec:.4f}")
-    return acc, f1, auc,recall,prec
+    probs = _sigmoid(logits_np)
+    ece = _bin_ece(probs, labels_np, n_bins=15)
+    print(f"[Eval] Best Thr={thr:.2f}, Acc={acc:.4f}, F1={f1:.4f}, AUC={auc:.4f},Recall={recall:.4f},Prec={prec:.4f},ECE={ece:.4f}")
+    return acc, f1, auc,recall,prec, ece
 
 # ------------------- 主训练循环 -------------------
 for ii in range(args.itr):
@@ -402,14 +417,14 @@ for ii in range(args.itr):
         #test_loss, test_mae_loss = vali(args, accelerator, model, test_data, test_loader, criterion, mae_metric)
         
         if is_binary_cls:
-            test_acc, test_f1, test_auc,test_rec,test_prec = eval_binary_cls(args, accelerator, model, test_loader)
+            test_acc, test_f1, test_auc,test_rec,test_prec, test_ece = eval_binary_cls(args, accelerator, model, test_loader)
             accelerator.print(f"Train Loss: {train_loss_avg:.7f} "
-                            f"TEST[ACC {test_acc:.4f} F1 {test_f1:.4f} AUC {test_auc:.4f} Recall {test_rec:.4f} Prec {test_prec:.4f}]")
+                            f"TEST[ACC {test_acc:.4f} F1 {test_f1:.4f} AUC {test_auc:.4f} Recall {test_rec:.4f} Prec {test_prec:.4f} ECE {test_ece:.4f}]")
             results.append([ train_loss_avg
-                                , test_acc, test_f1, test_auc,test_rec,test_prec])
+                                , test_acc, test_f1, test_auc,test_rec,test_prec, test_ece])
         else:
-            results.append([ train_loss_avg, 
-                                None, None, None, None, None])
+            results.append([ train_loss_avg,
+                                None, None, None, None, None, None])
 
         early_stopping(train_loss_avg, model, path)
         if early_stopping.early_stop:
@@ -435,7 +450,7 @@ for ii in range(args.itr):
     if accelerator.is_local_main_process:
         os.makedirs("./metrics", exist_ok=True)
         results_df = pd.DataFrame(results, columns=['train_loss',
-                                                    'test_acc','test_f1','test_auc','test_rec','test_prec'])
+                                                    'test_acc','test_f1','test_auc','test_rec','test_prec','test_ece'])
         csv_path = os.path.join("./metrics", f"{args.model_id}_metrics.csv")
         results_df.to_csv(csv_path, index=False)
         accelerator.print(f"Metrics saved to {csv_path}")
