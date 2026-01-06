@@ -10,6 +10,7 @@ d_model=32
 d_ff=256
 
 comment='TimeLLM-build-classification'
+run_tag=$(date +%Y%m%d_%H%M%S)
 
 
 for gamma in 0.5 1 2; do
@@ -19,7 +20,7 @@ for gamma in 0.5 1 2; do
       --is_training 1 \
       --root_path ./dataset/data/ \
       --data_path test_fail.csv \
-      --model_id "focal_a${alpha}_g${gamma}" \
+      --model_id "focal_a${alpha}_g${gamma}_${run_tag}" \
       --model $model_name \
       --data build_data \
       --features S \
