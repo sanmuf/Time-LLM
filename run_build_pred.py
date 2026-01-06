@@ -93,7 +93,9 @@ parser.add_argument('--eval_batch_size', type=int, default=8, help='batch size o
 parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
 parser.add_argument('--learning_rate', type=float, default=0.0001, help='optimizer learning rate')
 parser.add_argument('--des', type=str, default='test', help='exp description')
-parser.add_argument('--loss', type=str, default='MSE', help='loss function (MSE or BCE)')
+parser.add_argument('--loss', type=str, default='MSE', help='loss function (MSE/BCE/FOCAL)')
+parser.add_argument('--focal_alpha', type=float, default=0.25, help='alpha for focal loss')
+parser.add_argument('--focal_gamma', type=float, default=3.0, help='gamma for focal loss')
 parser.add_argument('--lradj', type=str, default='type1', help='adjust learning rate')
 parser.add_argument('--pct_start', type=float, default=0.2, help='pct_start')
 parser.add_argument('--use_amp', action='store_true', help='use automatic mixed precision training', default=False)
@@ -295,6 +297,9 @@ for ii in range(args.itr):
         # criterion = nn.BCEWithLogitsLoss()
         criterion = AsymmetricLoss(gamma_neg=4, gamma_pos=1, clip=0.05)
         is_binary_cls = True
+    elif args.loss.upper() in ['FOCAL', 'FOCALLOSS']:
+        criterion = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma)
+        is_binary_cls = True
     else:
         criterion = nn.MSELoss()
         is_binary_cls = False
@@ -362,33 +367,7 @@ for ii in range(args.itr):
                     print("outputs slice example:", outputs[0, :5])
 
                 batch_y_slice = batch_y[:, -args.pred_len:, f_dim:]
-                
-                last_status = batch_x[:, -1, -1].to(accelerator.device)
-
-                # 2. 获取“当前时刻”的真实状态 (Target)
-                # batch_y_slice shape: [Batch, Pred_Len, 1] -> 变成 [Batch]
-                current_status = batch_y_slice.squeeze(-1).squeeze(-1).to(accelerator.device)
-
-                # 3. 找出“状态突变”的样本 (0->1 或 1->0)
-                # 如果相等，diff 为 0；如果不等，diff 为 1
-                is_change = (last_status != current_status).float()
-
-                # 4. 设置权重
-                # 没变的样本权重 = 1.0
-                # 突变的样本权重 = 1.0 + 15.0 (或者更高，比如 20.0)
-                # 这个系数 15.0 可以调节，越大说明你越想让模型关注突变
-                sample_weights = 1.0 + 10.0 * is_change 
-
-                # 5. 计算逐样本的 Loss (不求平均，reduction='none')
-                # 注意：这里需要手动调用 functional 的 BCE Loss
-                per_sample_loss = F.binary_cross_entropy_with_logits(
-                    outputs.squeeze(-1),       # [Batch, 1] -> [Batch]
-                    batch_y_slice.squeeze(-1), # [Batch, 1] -> [Batch]
-                    reduction='none'           # 关键：保留每个样本的 Loss
-                )
-
-                # 6. 加权并求平均
-                loss = (per_sample_loss * sample_weights).mean()
+                loss = criterion(outputs, batch_y_slice)
 
                 train_loss.append(loss.item())
                 accelerator.backward(loss)

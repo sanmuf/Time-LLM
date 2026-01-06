@@ -12,34 +12,40 @@ d_ff=256
 comment='TimeLLM-build-classification'
 
 
-accelerate launch  --mixed_precision bf16 --num_processes $num_process --main_process_port $master_port run_build_pred.py \
-  --task_name classification \
-  --is_training 1 \
-  --root_path ./dataset/data/ \
-  --data_path test_fail.csv \
-  --model_id test_fail_ten\
-  --model $model_name \
-  --data build_data \
-  --features S \
-  --target now_label \
-  --loss BCE \
-  --seq_len 32 \
-  --label_len 5 \
-  --pred_len 1 \
-  --factor 1 \
-  --enc_in 1 \
-  --dec_in 1 \
-  --c_out 1 \
-  --des 'Exp' \
-  --itr 1 \
-  --d_model $d_model \
-  --d_ff $d_ff \
-  --batch_size $batch_size \
-  --learning_rate $learning_rate \
-  --llm_layers $llama_layers \
-  --train_epochs $train_epochs \
-  --model_comment $comment \
-  --prompt_domain 1 
+for gamma in 0.5 1 2; do
+  for alpha in 0.1 0.25 0.5; do
+    accelerate launch --mixed_precision bf16 --num_processes $num_process --main_process_port $master_port run_build_pred.py \
+      --task_name classification \
+      --is_training 1 \
+      --root_path ./dataset/data/ \
+      --data_path test_fail.csv \
+      --model_id "focal_a${alpha}_g${gamma}" \
+      --model $model_name \
+      --data build_data \
+      --features S \
+      --target now_label \
+      --loss FOCAL \
+      --focal_alpha $alpha \
+      --focal_gamma $gamma \
+      --seq_len 32 \
+      --label_len 5 \
+      --pred_len 1 \
+      --factor 1 \
+      --enc_in 1 \
+      --dec_in 1 \
+      --c_out 1 \
+      --des 'Exp' \
+      --itr 1 \
+      --d_model $d_model \
+      --d_ff $d_ff \
+      --batch_size $batch_size \
+      --learning_rate $learning_rate \
+      --llm_layers $llama_layers \
+      --train_epochs $train_epochs \
+      --model_comment $comment \
+      --prompt_domain 1
+  done
+done
 
 
 :<<'COMMINT'
