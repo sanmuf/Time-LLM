@@ -267,6 +267,7 @@ for ii in range(args.itr):
         args.d_ff, args.factor, args.embed, args.des, ii)
 
     train_data, train_loader = data_provider(args, 'train')
+    val_data, val_loader = data_provider(args, 'val')
     test_data, test_loader = data_provider(args, 'test')
 
     pos_count, neg_count = 0, 0
@@ -298,15 +299,6 @@ for ii in range(args.itr):
     trained_parameters = [p for p in model.parameters() if p.requires_grad]
     model_optim = optim.Adam(trained_parameters, lr=args.learning_rate)
 
-    if args.lradj == 'COS':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(model_optim, T_max=20, eta_min=1e-8)
-    else:
-        scheduler = lr_scheduler.OneCycleLR(optimizer=model_optim,
-                                            steps_per_epoch=train_steps,
-                                            pct_start=args.pct_start,
-                                            epochs=args.train_epochs,
-                                            max_lr=args.learning_rate)
-
     if args.loss.upper() in ['BCE', 'BCEWITHLOGITSLOSS']:
         # criterion = FocalLoss(alpha=0.25, gamma=3.0)
         #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(accelerator.device))
@@ -320,9 +312,18 @@ for ii in range(args.itr):
         criterion = nn.MSELoss()
         is_binary_cls = False
 
+    if is_binary_cls:
+        scheduler = lr_scheduler.ReduceLROnPlateau(
+            model_optim, mode='max', factor=0.5, patience=2, threshold=1e-4
+        )
+    else:
+        scheduler = lr_scheduler.ReduceLROnPlateau(
+            model_optim, mode='min', factor=0.5, patience=2, threshold=1e-4
+        )
+
     mae_metric = nn.L1Loss()
-    train_loader,  test_loader, model, model_optim, scheduler = accelerator.prepare(
-        train_loader,  test_loader, model, model_optim, scheduler)
+    train_loader, val_loader, test_loader, model, model_optim, scheduler = accelerator.prepare(
+        train_loader, val_loader, test_loader, model, model_optim, scheduler)
 
     if args.use_amp:
         scaler = torch.cuda.amp.GradScaler()
@@ -418,40 +419,46 @@ for ii in range(args.itr):
         #test_loss, test_mae_loss = vali(args, accelerator, model, test_data, test_loader, criterion, mae_metric)
         
         if is_binary_cls:
-            test_acc, test_f1, test_auc,test_rec,test_prec, test_ece = eval_binary_cls(args, accelerator, model, test_loader)
-            accelerator.print(f"Train Loss: {train_loss_avg:.7f} "
-                            f"TEST[ACC {test_acc:.4f} F1 {test_f1:.4f} AUC {test_auc:.4f} Recall {test_rec:.4f} Prec {test_prec:.4f} ECE {test_ece:.4f}]")
-            results.append([ train_loss_avg
-                                , test_acc, test_f1, test_auc,test_rec,test_prec, test_ece])
+            val_acc, val_f1, val_auc, val_rec, val_prec, val_ece = eval_binary_cls(
+                args, accelerator, model, val_loader
+            )
+            test_acc, test_f1, test_auc, test_rec, test_prec, test_ece = eval_binary_cls(
+                args, accelerator, model, test_loader
+            )
+            accelerator.print(
+                f"Train Loss: {train_loss_avg:.7f} "
+                f"VAL[ACC {val_acc:.4f} F1 {val_f1:.4f} AUC {val_auc:.4f} Recall {val_rec:.4f} Prec {val_prec:.4f} ECE {val_ece:.4f}] "
+                f"TEST[ACC {test_acc:.4f} F1 {test_f1:.4f} AUC {test_auc:.4f} Recall {test_rec:.4f} Prec {test_prec:.4f} ECE {test_ece:.4f}]"
+            )
+            results.append([
+                train_loss_avg,
+                val_acc, val_f1, val_auc, val_rec, val_prec, val_ece,
+                test_acc, test_f1, test_auc, test_rec, test_prec, test_ece
+            ])
         else:
-            results.append([ train_loss_avg,
-                                None, None, None, None, None, None])
+            results.append([train_loss_avg] + [None] * 12)
 
         early_stopping(train_loss_avg, model, path)
         if early_stopping.early_stop:
             accelerator.print("Early stopping")
             break
 
-        if args.lradj != 'TST':
-            if args.lradj == 'COS':
-                scheduler.step()
-                accelerator.print("lr = {:.10f}".format(model_optim.param_groups[0]['lr']))
-            else:
-                if epoch == 0:
-                    args.learning_rate = model_optim.param_groups[0]['lr']
-                    accelerator.print("lr = {:.10f}".format(model_optim.param_groups[0]['lr']))
-                adjust_learning_rate(accelerator, model_optim, scheduler, epoch + 1, args, printout=True)
-
+        if is_binary_cls:
+            scheduler.step(val_f1)
         else:
-            accelerator.print('Updating learning rate to {}'.format(scheduler.get_last_lr()[0]))
+            scheduler.step(train_loss_avg)
+        accelerator.print("lr = {:.10f}".format(model_optim.param_groups[0]['lr']))
 
     # ---- 保存 CSV ----
 
         
     if accelerator.is_local_main_process:
         os.makedirs("./metrics", exist_ok=True)
-        results_df = pd.DataFrame(results, columns=['train_loss',
-                                                    'test_acc','test_f1','test_auc','test_rec','test_prec','test_ece'])
+        results_df = pd.DataFrame(results, columns=[
+            'train_loss',
+            'val_acc', 'val_f1', 'val_auc', 'val_rec', 'val_prec', 'val_ece',
+            'test_acc', 'test_f1', 'test_auc', 'test_rec', 'test_prec', 'test_ece'
+        ])
         csv_path = os.path.join("./metrics", f"{args.model_id}_metrics.csv")
         results_df.to_csv(csv_path, index=False)
         accelerator.print(f"Metrics saved to {csv_path}")
