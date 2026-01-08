@@ -491,6 +491,7 @@ class Dataset_Data_pred(Dataset):
             json_file = self.test_json_path
 
         df_raw = pd.read_csv(os.path.join(self.root_path, csv_file))
+        df_raw.replace([np.inf, -np.inf], np.nan, inplace=True)
         text_data = json.load(open(os.path.join(self.root_path, json_file), 'r'))
         self.text_data = text_data
 
@@ -504,6 +505,8 @@ class Dataset_Data_pred(Dataset):
 
         ordered_cols = ([date_col] if date_col else []) + cols + [self.target]
         df_raw = df_raw[ordered_cols]
+        df_raw[cols] = df_raw[cols].fillna(0.0)
+        df_raw[self.target] = df_raw[self.target].fillna(0.0)
 
         if self.set_type in [0, 1] and use_val_split:
             total_len = len(df_raw)
@@ -525,6 +528,7 @@ class Dataset_Data_pred(Dataset):
 
         if self.scale:
             train_df_raw = pd.read_csv(os.path.join(self.root_path, self.train_path))
+            train_df_raw.replace([np.inf, -np.inf], np.nan, inplace=True)
             train_cols = list(train_df_raw.columns)
             train_cols.remove(self.target)
             train_date_col = 'date' if 'date' in train_df_raw.columns else None
@@ -534,6 +538,8 @@ class Dataset_Data_pred(Dataset):
                 train_cols.remove('tr_build_id')
             train_ordered_cols = ([train_date_col] if train_date_col else []) + train_cols + [self.target]
             train_df_raw = train_df_raw[train_ordered_cols]
+            train_df_raw[train_cols] = train_df_raw[train_cols].fillna(0.0)
+            train_df_raw[self.target] = train_df_raw[self.target].fillna(0.0)
             X_train = train_df_raw[train_cols].values.astype(np.float32)
             self.scaler.fit(X_train)
             X_feat = self.scaler.transform(X_feat)

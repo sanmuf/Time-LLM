@@ -103,6 +103,7 @@ parser.add_argument('--llm_layers', type=int, default=6)
 parser.add_argument('--percent', type=int, default=100)
 parser.add_argument('--use_oversample', action='store_true', help='Use oversampling for training')
 parser.add_argument('--val_split', type=float, default=0.1, help='val split ratio when no val set provided')
+parser.add_argument('--nan_debug', action='store_true', help='print NaN/Inf debug info and skip bad batches')
 
 
 args = parser.parse_args()
@@ -176,11 +177,21 @@ class AsymmetricLoss(nn.Module):
 
 # ------------------- 二分类指标工具 -------------------
 def _sigmoid(x: np.ndarray) -> np.ndarray:
+    x = np.clip(x, -50.0, 50.0)
     return 1.0 / (1.0 + np.exp(-x))
 
 def _bin_metrics_from_logits(logits: np.ndarray, labels: np.ndarray, thr: float = 0.5):
+    valid_mask = np.isfinite(logits) & np.isfinite(labels)
+    if not np.all(valid_mask):
+        invalid_count = int((~valid_mask).sum())
+        print(f"warning: filtered {invalid_count} invalid logits/labels")
+    logits = logits[valid_mask]
+    labels = labels[valid_mask]
+    if logits.size == 0:
+        print("probs mean: nan (no valid logits)")
+        return 0.0, 0.0, float('nan'), 0.0, 0.0
     probs = _sigmoid(logits)
-    print("probs mean:", probs.mean())
+    print("probs mean:", float(np.mean(probs)))
     preds = (probs >= thr).astype(np.int64)
     y = labels.astype(np.int64)
     acc = float((preds == y).mean()) if y.size else 0.0

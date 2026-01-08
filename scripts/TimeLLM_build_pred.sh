@@ -24,7 +24,7 @@ for gamma in 0.5 1 2; do
       --train_json_path train_fail.json \
       --val_path train_fail.csv \
       --val_json_path train_fail.json \
-      --val_split 0.1
+      --val_split 0.1 \
       --model_id "focal_a${alpha}_g${gamma}_${run_tag}" \
       --model $model_name \
       --data build_data \
