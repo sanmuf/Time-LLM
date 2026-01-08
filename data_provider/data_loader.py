@@ -524,9 +524,19 @@ class Dataset_Data_pred(Dataset):
         print(f"Positive samples ratio: {np.sum(y==1)/len(y):.4f}")
 
         if self.scale:
-            if self.set_type == 0:
-                self.scaler.fit(X_feat)
-                X_feat = self.scaler.transform(X_feat)
+            train_df_raw = pd.read_csv(os.path.join(self.root_path, self.train_path))
+            train_cols = list(train_df_raw.columns)
+            train_cols.remove(self.target)
+            train_date_col = 'date' if 'date' in train_df_raw.columns else None
+            if train_date_col and train_date_col in train_cols:
+                train_cols.remove(train_date_col)
+            if 'tr_build_id' in train_cols:
+                train_cols.remove('tr_build_id')
+            train_ordered_cols = ([train_date_col] if train_date_col else []) + train_cols + [self.target]
+            train_df_raw = train_df_raw[train_ordered_cols]
+            X_train = train_df_raw[train_cols].values.astype(np.float32)
+            self.scaler.fit(X_train)
+            X_feat = self.scaler.transform(X_feat)
 
         if self.features == 'M' or self.features == 'MS':
             X_all = np.concatenate([X_feat, y_target], axis=1)
