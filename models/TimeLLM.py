@@ -278,24 +278,32 @@ class Model(nn.Module):
             #     f"Please only answer 1 if the build failed or 0 if the build succeeded.<|end_prompt|>"
             # )
             prompt_ = (
-                """<|start_prompt|>
-                Role:You are an experienced software build outcome prediction expert.
-                Task: Predict Build Result (0=Success, 1=Fail).
-                Model: [History(H)] + [Text_Summary(T)] + [Stats(S)] -> Result
-                Traits for SUCCESS:
-                1.Stability(H:1,1,1) 2.LowRisk_Text(T:Docs/Style) 3.LowChurn(S:Low)
-                Traits for FAILURE:
-                1.Instability(H:0,0) 2.HighRisk_Text(T:Refactor/Deps) 3.HighChurn(S:High)
-                Examples:
-                1. H:[1,1,1] T:Update readme S:Lines<5 -> 1
-                2. H:[0,1,1] T:Fix typo in comment S:Lines<10 -> 1
-                3. H:[0,0,1] T:Minor variable rename S:Lines<20 -> 1
-                4. H:[0,0,0] T:Refactor core logic S:Lines>500 -> 0
-                5. H:[1,1,1] T:Upgrade major dependency S:Files>50 -> 0
-                6. H:[0,1,0] T:Merge experimental branch S:Complex -> 0
-                Target:output only the result digit(0 or 1),no explanation
-                H:history_data T:text_summary S:stats_data ->
-                <|end_prompt|>"""
+                "<|start_prompt|>\n"
+                "Role: You are an experienced software build outcome prediction expert.\n"
+                "Task: Predict Build Result (0=Success, 1=Fail).\n"
+                "Model: [History(H)] + [Text_Summary(T)] + [Stats(S)] -> Result\n"
+                "Traits for SUCCESS:\n"
+                "1) Stability in H (many recent 1s)\n"
+                "2) Low-risk text (docs/format/style)\n"
+                "3) Low churn in S\n"
+                "Traits for FAILURE:\n"
+                "1) Instability in H (many recent 0s)\n"
+                "2) High-risk text (refactor/deps)\n"
+                "3) High churn in S\n"
+                "Examples:\n"
+                "1) H:[1,1,1] T:Update readme S:Lines<5 -> 0\n"
+                "2) H:[0,1,1] T:Fix typo in comment S:Lines<10 -> 0\n"
+                "3) H:[0,0,1] T:Minor variable rename S:Lines<20 -> 0\n"
+                "4) H:[0,0,0] T:Refactor core logic S:Lines>500 -> 1\n"
+                "5) H:[1,1,1] T:Upgrade major dependency S:Files>50 -> 1\n"
+                "6) H:[0,1,0] T:Merge experimental branch S:Complex -> 1\n"
+                f"Current stats: last={last_fail}, "
+                f"recent5(min={min_5:.2f}, max={max_5:.2f}, median={median_5:.2f}, mean={mean_5:.2f}), "
+                f"recent10(min={min_10:.2f}, max={max_10:.2f}, median={median_10:.2f}, mean={mean_10:.2f}), "
+                f"trend={trend_dir}, top_lags={lag_v}.\n"
+                "Target: output only the result digit (0 or 1), no explanation.\n"
+                "H:history_data T:text_summary S:stats_data ->\n"
+                "<|end_prompt|>"
             )
             prompt.append(prompt_)
 
