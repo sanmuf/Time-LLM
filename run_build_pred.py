@@ -124,7 +124,7 @@ class FocalLoss(nn.Module):
         )
         pt = torch.exp(-bce_loss)
         alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
-        focal_loss = self.alpha * (1-pt) ** self.gamma * bce_loss
+        focal_loss = alpha_t * (1-pt) ** self.gamma * bce_loss
         return focal_loss.mean()
     
 def hard_negative_mining(losses, labels, ratio=0.5):
@@ -228,16 +228,19 @@ def _bin_ece(probs: np.ndarray, labels: np.ndarray, n_bins: int = 15) -> float:
         ece += (np.sum(mask) / len(probs)) * abs(bin_acc - bin_conf)
     return float(ece)
 
-def find_best_prec(logits: np.ndarray, labels: np.ndarray):
-    best_f1, best_thr, best_acc, best_auc,best_rec,best_prec = 0.0, 0.5, 0.0, float('nan'),0.0,0.0
-    for t in np.arange(0.1, 0.9 + 0.001, 0.01): 
-        acc, f1, auc,rec,prec = _bin_metrics_from_logits(logits, labels, thr=t)
-        if f1 > best_f1:
-            best_f1, best_thr, best_acc, best_auc,best_rec,best_prec = f1, t, acc, auc,rec,prec
-    return best_acc, best_f1, best_auc, best_rec,best_prec,best_thr
+def find_best_threshold(logits: np.ndarray, labels: np.ndarray):
+    best_min_pr = -1.0
+    best_f1, best_thr, best_acc, best_auc, best_rec, best_prec = 0.0, 0.5, 0.0, float('nan'), 0.0, 0.0
+    for t in np.arange(0.1, 0.9 + 0.001, 0.01):
+        acc, f1, auc, rec, prec = _bin_metrics_from_logits(logits, labels, thr=t)
+        min_pr = min(rec, prec)
+        if (min_pr > best_min_pr) or (min_pr == best_min_pr and f1 > best_f1):
+            best_min_pr = min_pr
+            best_f1, best_thr, best_acc, best_auc, best_rec, best_prec = f1, t, acc, auc, rec, prec
+    return best_acc, best_f1, best_auc, best_rec, best_prec, best_thr
 
 @torch.no_grad()
-def eval_binary_cls(args, accelerator, model, data_loader):
+def eval_binary_cls(args, accelerator, model, data_loader, search_thr: bool = True, fixed_thr: float = 0.5):
     model.eval()
     all_logits, all_labels = [], []
     for batch_x, batch_y, batch_x_mark, batch_y_mark,batch_token_ids,batch_feat,_ in data_loader:
@@ -260,14 +263,18 @@ def eval_binary_cls(args, accelerator, model, data_loader):
         all_logits.append(logits.detach().reshape(-1).cpu())
         all_labels.append(labels.detach().reshape(-1).cpu())
     if not all_logits:
-        return 0.0, 0.0, float('nan'), 0.0, 0.0, float('nan')
+        return 0.0, 0.0, float('nan'), 0.0, 0.0, float('nan'), float('nan')
     logits_np = torch.cat(all_logits).float().cpu().numpy()
     labels_np = torch.cat(all_labels).float().cpu().numpy()
-    acc, f1, auc,recall,prec, thr = find_best_prec(logits_np, labels_np)
     probs = _sigmoid(logits_np)
+    if search_thr:
+        acc, f1, auc, recall, prec, thr = find_best_threshold(logits_np, labels_np)
+    else:
+        acc, f1, auc, recall, prec = _bin_metrics_from_logits(logits_np, labels_np, thr=fixed_thr)
+        thr = fixed_thr
     ece = _bin_ece(probs, labels_np, n_bins=15)
     print(f"[Eval] Best Thr={thr:.2f}, Acc={acc:.4f}, F1={f1:.4f}, AUC={auc:.4f},Recall={recall:.4f},Prec={prec:.4f},ECE={ece:.4f}")
-    return acc, f1, auc,recall,prec, ece
+    return acc, f1, auc, recall, prec, ece, thr
 
 # ------------------- 主训练循环 -------------------
 for ii in range(args.itr):
@@ -312,9 +319,8 @@ for ii in range(args.itr):
 
     if args.loss.upper() in ['BCE', 'BCEWITHLOGITSLOSS']:
         # criterion = FocalLoss(alpha=0.25, gamma=3.0)
-        #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(accelerator.device))
-        # criterion = nn.BCEWithLogitsLoss()
-        criterion = AsymmetricLoss(gamma_neg=4, gamma_pos=1, clip=0.05)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(accelerator.device))
+        # criterion = AsymmetricLoss(gamma_neg=4, gamma_pos=1, clip=0.05)
         is_binary_cls = True
     elif args.loss.upper() in ['FOCAL', 'FOCALLOSS']:
         criterion = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma)
@@ -430,11 +436,11 @@ for ii in range(args.itr):
         #test_loss, test_mae_loss = vali(args, accelerator, model, test_data, test_loader, criterion, mae_metric)
         
         if is_binary_cls:
-            val_acc, val_f1, val_auc, val_rec, val_prec, val_ece = eval_binary_cls(
-                args, accelerator, model, val_loader
+            val_acc, val_f1, val_auc, val_rec, val_prec, val_ece, val_thr = eval_binary_cls(
+                args, accelerator, model, val_loader, search_thr=True
             )
-            test_acc, test_f1, test_auc, test_rec, test_prec, test_ece = eval_binary_cls(
-                args, accelerator, model, test_loader
+            test_acc, test_f1, test_auc, test_rec, test_prec, test_ece, _ = eval_binary_cls(
+                args, accelerator, model, test_loader, search_thr=False, fixed_thr=val_thr
             )
             accelerator.print(
                 f"Train Loss: {train_loss_avg:.7f} "
@@ -449,7 +455,10 @@ for ii in range(args.itr):
         else:
             results.append([train_loss_avg] + [None] * 12)
 
-        early_stopping(train_loss_avg, model, path)
+        if is_binary_cls:
+            early_stopping(val_f1, model, path)
+        else:
+            early_stopping(train_loss_avg, model, path)
         if early_stopping.early_stop:
             accelerator.print("Early stopping")
             break
