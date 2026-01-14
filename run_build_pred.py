@@ -239,8 +239,16 @@ def find_best_threshold(logits: np.ndarray, labels: np.ndarray):
             best_f1, best_thr, best_acc, best_auc, best_rec, best_prec = f1, t, acc, auc, rec, prec
     return best_acc, best_f1, best_auc, best_rec, best_prec, best_thr
 
+def find_best_f1(logits: np.ndarray, labels: np.ndarray):
+    best_f1, best_thr, best_acc, best_auc, best_rec, best_prec = 0.0, 0.5, 0.0, float('nan'), 0.0, 0.0
+    for t in np.arange(0.1, 0.9 + 0.001, 0.01):
+        acc, f1, auc, rec, prec = _bin_metrics_from_logits(logits, labels, thr=t)
+        if f1 > best_f1:
+            best_f1, best_thr, best_acc, best_auc, best_rec, best_prec = f1, t, acc, auc, rec, prec
+    return best_acc, best_f1, best_auc, best_rec, best_prec, best_thr
+
 @torch.no_grad()
-def eval_binary_cls(args, accelerator, model, data_loader, search_thr: bool = True, fixed_thr: float = 0.5):
+def eval_binary_cls(args, accelerator, model, data_loader, search_thr: bool = True, fixed_thr: float = 0.5, search_mode: str = "min_pr"):
     model.eval()
     all_logits, all_labels = [], []
     for batch_x, batch_y, batch_x_mark, batch_y_mark,batch_token_ids,batch_feat,_ in data_loader:
@@ -268,7 +276,10 @@ def eval_binary_cls(args, accelerator, model, data_loader, search_thr: bool = Tr
     labels_np = torch.cat(all_labels).float().cpu().numpy()
     probs = _sigmoid(logits_np)
     if search_thr:
-        acc, f1, auc, recall, prec, thr = find_best_threshold(logits_np, labels_np)
+        if search_mode == "f1":
+            acc, f1, auc, recall, prec, thr = find_best_f1(logits_np, labels_np)
+        else:
+            acc, f1, auc, recall, prec, thr = find_best_threshold(logits_np, labels_np)
     else:
         acc, f1, auc, recall, prec = _bin_metrics_from_logits(logits_np, labels_np, thr=fixed_thr)
         thr = fixed_thr
@@ -437,10 +448,10 @@ for ii in range(args.itr):
         
         if is_binary_cls:
             val_acc, val_f1, val_auc, val_rec, val_prec, val_ece, val_thr = eval_binary_cls(
-                args, accelerator, model, val_loader, search_thr=True
+                args, accelerator, model, val_loader, search_thr=True, search_mode="min_pr"
             )
             test_acc, test_f1, test_auc, test_rec, test_prec, test_ece, _ = eval_binary_cls(
-                args, accelerator, model, test_loader, search_thr=False, fixed_thr=val_thr
+                args, accelerator, model, test_loader, search_thr=True, search_mode="f1"
             )
             accelerator.print(
                 f"Train Loss: {train_loss_avg:.7f} "
