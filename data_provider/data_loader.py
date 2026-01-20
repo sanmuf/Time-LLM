@@ -372,6 +372,8 @@ class Dataset_Build_pred(Dataset):
         feature_cols = cols
         X_feat = df_raw[feature_cols].values.astype(np.float32)
         y_target = df_raw[[self.target]].values.astype(np.float32)
+        # Flip binary labels (0<->1) for all splits: 0=fail, 1=success.
+        y_target = 1.0 - y_target
        # self.labels = y_target[border1:border2-self.seq_len - self.pred_len + 1].astype(int).reshape(-1)
 
         if self.scale:
@@ -523,6 +525,8 @@ class Dataset_Data_pred(Dataset):
         feature_cols = cols
         X_feat = df_raw[feature_cols].values.astype(np.float32)
         y_target = df_raw[[self.target]].values.astype(np.float32)
+        # Flip binary labels (0<->1) for all splits: 0=fail, 1=success.
+        y_target = 1.0 - y_target
         y = np.array(y_target).reshape(-1)
         print(f"Positive samples ratio: {np.sum(y==1)/len(y):.4f}")
 
